@@ -6,6 +6,8 @@ interface Prompt { id: string; text: string; icon: string }
 interface TranscribeResult {
   pipeline: { stage: string; model: string; confidence: number; ms: number }[];
   transcript_raw: string;
+  language_detected: string;
+  language_label: string;
   translation_en: string;
   suggested: {
     title: string;
@@ -89,7 +91,7 @@ export default function ElderPortal() {
           transcript: result.transcript_raw,
           translation_en: result.translation_en,
           category: form.category,
-          language: "el",
+          language: result.language_detected || "el",
           place_name: form.place_name || result.suggested.place_name,
           lat: result.suggested.geotag.lat,
           lng: result.suggested.geotag.lng,
@@ -181,10 +183,13 @@ export default function ElderPortal() {
           {saveError && <div className="error-box">{saveError}</div>}
           <div className="glass card">
             <h2 className="elder-huge" style={{ fontSize: 26 }}>✨ We heard this story</h2>
-            <p style={{ fontSize: 19, marginTop: 14, lineHeight: 1.6 }}>{result.transcript_raw}</p>
-            <p style={{ color: "var(--muted)", fontSize: 17, marginTop: 10, fontStyle: "italic" }}>
-              “{result.translation_en}”
+            <p style={{ fontSize: 19, marginTop: 14, lineHeight: 1.6 }}>{result.translation_en}</p>
+            <p style={{ color: "var(--muted)", fontSize: 17, marginTop: 14, fontStyle: "italic" }}>
+              “{result.transcript_raw}”
             </p>
+            <div style={{ marginTop: 8 }}>
+              <span className="badge accent">🌍 Original · {result.language_label}</span>
+            </div>
             <div style={{ marginTop: 14, display: "flex", gap: 8, flexWrap: "wrap" }}>
               <span className="badge accent">📍 {result.suggested.place_name}</span>
               <span className="badge">🗓️ around {result.suggested.era}</span>

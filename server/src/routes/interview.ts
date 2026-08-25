@@ -30,6 +30,8 @@ router.post("/session", requireAuth, (req, res) => {
 const MOCK_TRANSCRIPTS = [
   {
     raw: "Κάθε Αύγουστο, το βράδυ, μαζευόμαστε στην πλατεία και τα γεροντότερα έλεγαν το τραγούδι του ποταμού...",
+    lang_label: "Greek · Ελληνικά",
+    lang_code: "el",
     en: "Every August evening we gathered in the square and the eldest would sing the song of the river — the same song their grandmothers sang before the bridge was built in 1932.",
     place: "Old Stone Bridge",
     lat: 39.7667, lng: 20.9667,
@@ -39,6 +41,8 @@ const MOCK_TRANSCRIPTS = [
   },
   {
     raw: "Ο παππούς μου έφτιαχνε καμπάνα για τα πρόβατα. Χτυπούσε το χαλκό με σφυρί μέχρι να ακουστεί σε όλο το βουνό...",
+    lang_label: "Greek · Ελληνικά",
+    lang_code: "el",
     en: "My grandfather cast bells for the sheep, hammering the bronze until its ring could be heard across the whole mountain. Each bell had a voice of its own.",
     place: "Bell Founders' Lane",
     lat: 39.7695, lng: 21.1797,
@@ -48,6 +52,8 @@ const MOCK_TRANSCRIPTS = [
   },
   {
     raw: "Την Μεγάλη Πέμπτη ψήναμε το ψωμί με το κόκκινο αυγό στη χόβολη...",
+    lang_label: "Greek · Ελληνικά",
+    lang_code: "el",
     en: "On Holy Thursday we baked bread with red-dyed eggs pressed into the crust, right on the embers. The whole village smelled of mastic and orange peel.",
     place: "Panagia Square",
     lat: 35.3333, lng: 25.1333,
@@ -86,6 +92,8 @@ router.post(
         { stage: "structure", model: "cultory-structurer (mock)", confidence: 0.91, ms: 180 },
       ],
       transcript_raw: mock.raw,
+      language_detected: mock.lang_code,
+      language_label: mock.lang_label,
       translation_en: mock.en,
       suggested: {
         title: `${mock.place} — ${mock.category.replace("_", " ")}`,
