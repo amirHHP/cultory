@@ -1,21 +1,23 @@
 import { useEffect, useRef, useState } from "react";
-import { api } from "../api";
+import { api, getToken } from "../api";
 import { CATEGORY_LABELS } from "../types";
 
 interface Prompt { id: string; text: string; icon: string }
 interface TranscribeResult {
-  pipeline: { stage: string; model: string; confidence: number; ms: number }[];
+  mode: "ai" | "mock";
+  ai_error?: string;
+  pipeline: { stage: string; model: string; confidence: number | null; ms: number | null }[];
   transcript_raw: string;
-  language_detected: string;
+  language_detected: string | null;
   language_label: string;
   translation_en: string;
   suggested: {
     title: string;
     category: string;
     place_name: string;
-    geotag: { lat: number; lng: number };
+    geotag: { lat: number | null; lng: number | null };
     people: string[];
-    era: number;
+    era: number | null;
     duration_sec: number;
   };
 }
@@ -28,49 +30,118 @@ const PIPELINE_STEPS = [
   ["structure", "📍 Structuring & geotagging the story"],
 ] as const;
 
+const MAX_RECORD_MS = 5 * 60 * 1000; // serverless upload limit safety
+
 export default function ElderPortal() {
   const [phase, setPhase] = useState<Phase>("choose");
   const [prompts, setPrompts] = useState<Prompt[]>([]);
+  const [engine, setEngine] = useState<"ai" | "mock">("mock");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [seconds, setSeconds] = useState(0);
   const [result, setResult] = useState<TranscribeResult | null>(null);
   const [stepIdx, setStepIdx] = useState(0);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [micError, setMicError] = useState<string | null>(null);
+  const [recording, setRecording] = useState(false);
 
   const [form, setForm] = useState({ title: "", category: "folklore", place_name: "" });
+
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const streamRef = useRef<MediaStream | null>(null);
 
   useEffect(() => {
-    api<{ prompts: Prompt[] }>("/interview/prompts").then((r) => setPrompts(r.prompts));
-    return () => { if (timer.current) clearInterval(timer.current); };
+    api<{ prompts: Prompt[]; engine: "ai" | "mock" }>("/interview/prompts")
+      .then((r) => { setPrompts(r.prompts); setEngine(r.engine); })
+      .catch(() => {});
+    return () => {
+      if (timer.current) clearInterval(timer.current);
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+    };
   }, []);
 
   const startInterview = async () => {
+    setMicError(null);
+    setSaveError(null);
     const res = await api<{ session_id: string }>("/interview/session", { method: "POST" });
     setSessionId(res.session_id);
     setSeconds(0);
     setPhase("record");
-    timer.current = setInterval(() => setSeconds((s) => s + 1), 1000);
   };
 
-  const stopAndProcess = async () => {
+  const beginRecording = async () => {
+    setMicError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true },
+      });
+      streamRef.current = stream;
+      chunksRef.current = [];
+      const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find(
+        (m) => MediaRecorder.isTypeSupported(m)
+      );
+      const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+      rec.ondataavailable = (e) => e.data.size > 0 && chunksRef.current.push(e.data);
+      rec.onstop = onRecorderStop;
+      rec.start(1000);
+      recorderRef.current = rec;
+      setRecording(true);
+      timer.current = setInterval(() => setSeconds((s) => s + 1), 1000);
+      // safety auto-stop
+      setTimeout(() => {
+        if (recorderRef.current?.state === "recording") stopRecording();
+      }, MAX_RECORD_MS);
+    } catch (e: any) {
+      setMicError(
+        e?.name === "NotAllowedError"
+          ? "Microphone access was blocked. Allow it in your browser, or continue in demo mode below."
+          : "No microphone was found. You can still continue in demo mode."
+      );
+    }
+  };
+
+  const stopRecording = () => {
     if (timer.current) clearInterval(timer.current);
+    if (recorderRef.current?.state === "recording") {
+      recorderRef.current.stop();
+      setRecording(false);
+    } else {
+      processAudio(null);
+    }
+  };
+
+  const onRecorderStop = () => {
+    const blob = new Blob(chunksRef.current, { type: recorderRef.current?.mimeType || "audio/webm" });
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    processAudio(blob.size > 0 ? blob : null);
+  };
+
+  const processAudio = async (blob: Blob | null) => {
     setPhase("processing");
     for (let i = 0; i < PIPELINE_STEPS.length; i++) {
       setStepIdx(i);
-      await new Promise((r) => setTimeout(r, 650));
+      await new Promise((r) => setTimeout(r, 500));
     }
     try {
-      const res = await api<TranscribeResult>("/interview/transcribe", {
+      const fd = new FormData();
+      fd.append("session_id", sessionId!);
+      fd.append("duration_sec", String(Math.max(seconds, 5)));
+      if (blob) fd.append("audio", blob, "story.webm");
+      const res = await fetch("/api/interview/transcribe", {
         method: "POST",
-        body: { session_id: sessionId, duration_sec: Math.max(seconds, 5) },
+        headers: { Authorization: `Bearer ${getToken()}` },
+        credentials: "include",
+        body: fd,
       });
-      setResult(res);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Transcription failed");
+      setResult(data as TranscribeResult);
       setForm({
-        title: res.suggested.title,
-        category: CATEGORY_LABELS[res.suggested.category] ? res.suggested.category : "folklore",
-        place_name: res.suggested.place_name,
+        title: data.suggested.title,
+        category: CATEGORY_LABELS[data.suggested.category] ? data.suggested.category : "folklore",
+        place_name: data.suggested.place_name,
       });
       setPhase("review");
     } catch (e: any) {
@@ -91,20 +162,16 @@ export default function ElderPortal() {
           transcript: result.transcript_raw,
           translation_en: result.translation_en,
           category: form.category,
-          language: result.language_detected || "el",
+          language: result.language_detected || "und",
           place_name: form.place_name || result.suggested.place_name,
-          lat: result.suggested.geotag.lat,
-          lng: result.suggested.geotag.lng,
+          lat: result.suggested.geotag?.lat ?? undefined,
+          lng: result.suggested.geotag?.lng ?? undefined,
           duration_sec: Math.max(seconds, 5),
         },
       });
       setPhase("saved");
     } catch (e: any) {
-      setSaveError(
-        e.details
-          ? Object.values(e.details).flat().join(" · ")
-          : e.message
-      );
+      setSaveError(e.details ? Object.values(e.details).flat().join(" · ") : e.message);
     } finally {
       setSaving(false);
     }
@@ -116,6 +183,7 @@ export default function ElderPortal() {
     setSeconds(0);
     setStepIdx(0);
     setSaveError(null);
+    setMicError(null);
   };
 
   const mmss = `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
@@ -127,12 +195,15 @@ export default function ElderPortal() {
         <p style={{ color: "var(--muted)", fontSize: 18, marginTop: 8 }}>
           Talk with our AI interviewer. Your memories become part of your village's living history.
         </p>
+        <span className={`badge ${engine === "ai" ? "green" : ""}`} style={{ marginTop: 10 }}>
+          {engine === "ai" ? "⚡ Live AI engine connected" : "🧪 Demo engine — no AI key configured"}
+        </span>
       </div>
 
       {phase === "choose" && (
         <div style={{ display: "grid", gap: 14 }}>
           <button className="elder-big-btn primary" onClick={startInterview}>
-            <span style={{ fontSize: 34 }}>▶</span> Start a new interview
+            <span style={{ fontSize: 34 }}>🎤</span> Record my story (uses microphone)
           </button>
           {prompts.map((p) => (
             <button key={p.id} className="elder-big-btn" onClick={startInterview}>
@@ -149,18 +220,39 @@ export default function ElderPortal() {
           <p style={{ color: "var(--muted)", fontSize: 19 }}>
             Speak freely. Tap the circle when you are finished.
           </p>
-          <div
-            className={`mic-orb ${seconds > 0 ? "recording" : ""}`}
-            onClick={stopAndProcess}
-            role="button"
-            aria-label="Stop recording"
-          >
-            🎤
-          </div>
-          <div className="rec-timer">{mmss}</div>
-          <button className="btn btn-ghost btn-lg" onClick={stopAndProcess} style={{ marginTop: 22, width: "100%" }}>
-            ✅ I'm finished — process my story
-          </button>
+          {!recording && micError && <div className="error-box" style={{ marginTop: 14 }}>{micError}</div>}
+          {recording ? (
+            <>
+              <div
+                className="mic-orb recording"
+                onClick={stopRecording}
+                role="button"
+                aria-label="Stop recording"
+              >
+                ⏹
+              </div>
+              <div className="rec-timer">{mmss}</div>
+              <button className="btn btn-ghost btn-lg" onClick={stopRecording} style={{ marginTop: 22, width: "100%" }}>
+                ✅ I'm finished — process my story
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="mic-orb" onClick={beginRecording} role="button" aria-label="Start recording">
+                🎤
+              </div>
+              {micError && (
+                <button className="btn btn-ghost btn-lg" onClick={() => processAudio(null)} style={{ width: "100%" }}>
+                  ▶ Continue in demo mode (no microphone)
+                </button>
+              )}
+              {!micError && (
+                <button className="btn btn-primary btn-lg" onClick={beginRecording} style={{ width: "100%" }}>
+                  Start recording
+                </button>
+              )}
+            </>
+          )}
         </div>
       )}
 
@@ -181,8 +273,16 @@ export default function ElderPortal() {
       {phase === "review" && result && (
         <div style={{ display: "grid", gap: 16 }}>
           {saveError && <div className="error-box">{saveError}</div>}
+          {result.mode === "mock" && result.ai_error && result.ai_error !== "no audio" && (
+            <div className="error-box">AI engine unavailable ({result.ai_error}) — showing demo data instead.</div>
+          )}
           <div className="glass card">
-            <h2 className="elder-huge" style={{ fontSize: 26 }}>✨ We heard this story</h2>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <h2 className="elder-huge" style={{ fontSize: 26 }}>✨ We heard this story</h2>
+              <span className={`badge ${result.mode === "ai" ? "green" : ""}`}>
+                {result.mode === "ai" ? `⚡ ${result.pipeline[0].model}` : "🧪 demo engine"}
+              </span>
+            </div>
             <p style={{ fontSize: 19, marginTop: 14, lineHeight: 1.6 }}>{result.translation_en}</p>
             <p style={{ color: "var(--muted)", fontSize: 17, marginTop: 14, fontStyle: "italic" }}>
               “{result.transcript_raw}”
@@ -192,8 +292,7 @@ export default function ElderPortal() {
             </div>
             <div style={{ marginTop: 14, display: "flex", gap: 8, flexWrap: "wrap" }}>
               <span className="badge accent">📍 {result.suggested.place_name}</span>
-              <span className="badge">🗓️ around {result.suggested.era}</span>
-              <span className="badge green">confidence {(result.pipeline[2].confidence * 100).toFixed(0)}%</span>
+              {result.suggested.era && <span className="badge">🗓️ around {result.suggested.era}</span>}
             </div>
           </div>
 

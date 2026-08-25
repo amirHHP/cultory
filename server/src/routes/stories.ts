@@ -12,8 +12,8 @@ const storySchema = z.object({
   category: z.enum(["oral_history", "crafts_music", "cuisine", "folklore", "rituals", "nature_wisdom"]),
   language: z.string().default("el"),
   place_name: z.string().min(2).max(120),
-  lat: z.number().min(-90).max(90),
-  lng: z.number().min(-180).max(180),
+  lat: z.number().min(-90).max(90).optional(),
+  lng: z.number().min(-180).max(180).optional(),
   duration_sec: z.number().int().min(0).max(3600).default(0),
 });
 
@@ -47,8 +47,8 @@ router.post("/", requireAuth, (req, res) => {
     d.category,
     d.language,
     d.place_name,
-    d.lat,
-    d.lng,
+    d.lat ?? null,
+    d.lng ?? null,
     d.duration_sec,
     "interview"
   );
